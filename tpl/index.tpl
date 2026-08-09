@@ -27,7 +27,7 @@
             <mdui-icon name="system_update" class="mr-2"></mdui-icon>
             <span>系统更新</span>
             <div class="flex-1"></div>
-            <span id="update_status" class="tag tag-neutral">未检查</span>
+            <span id="update_status" class="tag tag-neutral">检查中</span>
         </div>
 
         <div class="col-xs12 col-sm6">
@@ -36,7 +36,7 @@
                     <mdui-icon name="inventory_2"></mdui-icon>
                 </div>
                 <div class="d-flex flex-col min-w-0">
-                    <div id="current_version" class="headline-small font-bold">-</div>
+                    <div id="current_version" class="headline-small font-bold">{$current_version}</div>
                     <div class="body-small text-on-surface-variant">当前版本</div>
                 </div>
             </mdui-card>
@@ -56,7 +56,7 @@
 
         <div class="col-xs12">
             <div id="update_tip" class="bg-surface-container rounded-lg p-3 body-small text-on-surface-variant">
-                无须更新
+                正在检查更新…
             </div>
         </div>
 

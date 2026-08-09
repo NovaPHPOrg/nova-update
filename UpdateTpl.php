@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace nova\plugin\update;
 
+use function nova\framework\config;
+use function nova\framework\route;
+
 use nova\framework\core\Instance;
 use nova\framework\http\Request;
 use nova\framework\http\Response;
-
-use function nova\framework\route;
-
 use nova\framework\route\Route;
 use nova\plugin\login\AdminPageInterface;
 use nova\plugin\tpl\ViewResponse;
@@ -31,7 +31,9 @@ class UpdateTpl extends Instance implements AdminPageInterface
             return null;
         }
 
-        return $view->asTpl(ROOT_PATH . DS . 'nova/plugin/update/tpl/index');
+        return $view->asTpl(ROOT_PATH . DS . 'nova/plugin/update/tpl/index', [
+            'current_version' => config('version') ?? '0.0.0',
+        ]);
     }
 
     public function menu(): array

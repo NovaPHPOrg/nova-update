@@ -21,7 +21,6 @@ class UpdateManager extends StaticRegister
 
     private function registerRoutes(): void
     {
-        $this->get('/update/api/status', $this->map('update', 'status'));
         $this->post('/update/api/check', $this->map('update', 'check'));
         $this->post('/update/api/apply', $this->map('update', 'apply'));
     }

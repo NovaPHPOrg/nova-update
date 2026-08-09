@@ -20,25 +20,12 @@ use ZipArchive;
 class Updater
 {
     private const PRESERVE = ['config.php', 'runtime', 'uploads'];
-    private const CACHE_KEY = 'update/check';
-    private const CACHE_TTL = 86400;
+    /** GitHub releases/latest 请求缓存（秒），走 HttpClient 自带缓存 */
+    private const HTTP_CACHE_TTL = 86400;
 
     public function version(): string
     {
         return config('version') ?? '0.0.0';
-    }
-
-    /**
-     * @return array{current: string, latest: string, updatable: bool, changelog: string, download_url: string}|null
-     */
-    public function cached(): ?array
-    {
-        $data = Context::instance()->cache->get(self::CACHE_KEY);
-        if (!is_array($data) || empty($data['latest'])) {
-            return null;
-        }
-
-        return $this->result($data);
     }
 
     /**
@@ -74,14 +61,11 @@ class Updater
             throw new RuntimeException('未找到标准包 ' . $assetName . '（不支持 Docker/Windows 包）');
         }
 
-        $result = $this->result([
+        return $this->result([
             'latest' => $latest,
             'changelog' => (string)($release['body'] ?? ''),
             'download_url' => $url,
         ]);
-        Context::instance()->cache->set(self::CACHE_KEY, $result, self::CACHE_TTL);
-
-        return $result;
     }
 
     /**
@@ -164,6 +148,7 @@ class Updater
     {
         $client = HttpClient::init('https://api.github.com')
             ->timeout(30)
+            ->cache(self::HTTP_CACHE_TTL)
             ->setHeaders([
                 'Accept' => 'application/vnd.github+json',
                 'User-Agent' => 'nova-update',

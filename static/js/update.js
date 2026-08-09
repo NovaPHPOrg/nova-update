@@ -6,7 +6,7 @@ window.pageOnLoad = function () {
     let preview = null;
 
     function setChangelog(md) {
-        const text = md || '点击「检查更新」获取最新信息。';
+        const text = md || '';
         if (preview) {
             preview.setMarkdown(text);
             return;
@@ -28,7 +28,7 @@ window.pageOnLoad = function () {
         $status.removeClass('tag-neutral tag-info tag-success');
 
         if (!latest) {
-            $status.addClass('tag-neutral').text('未检查');
+            $status.addClass('tag-neutral').text('检查失败');
         } else if (updatable) {
             $icon.addClass('is-new');
             $status.addClass('tag-info').text('有新版本');
@@ -48,27 +48,35 @@ window.pageOnLoad = function () {
         $('#btn_apply').prop('disabled', on || !updatable);
     }
 
-    function load() {
-        $.request.get('/update/api/status', {}, (res) => {
-            if (res.code === 200) render(res.data);
+    function checking() {
+        $('#update_status').removeClass('tag-info tag-success').addClass('tag-neutral').text('检查中');
+        $('#update_tip').text('正在检查更新…');
+    }
+
+    function checkUpdate(notify) {
+        busy(true);
+        checking();
+        $.request.postForm('/update/api/check', {}, (res) => {
+            busy(false);
+            if (res.code !== 200) {
+                render(res.data || {});
+                $('#update_tip').text(res.msg || '检查失败');
+                if (notify) $.toaster.error(res.msg || '检查失败');
+                return;
+            }
+            render(res.data);
+            if (notify) $.toaster.success(res.msg);
+        }, () => {
+            busy(false);
+            $('#update_status').removeClass('tag-info tag-success').addClass('tag-neutral').text('检查失败');
+            $('#update_tip').text('检查失败');
+            if (notify) $.toaster.error('检查失败');
         });
     }
 
     function bindActions() {
         $('#btn_check').on('click', function () {
-            busy(true);
-            $.request.postForm('/update/api/check', {}, (res) => {
-                busy(false);
-                if (res.code !== 200) {
-                    $.toaster.error(res.msg || '检查失败');
-                    return;
-                }
-                render(res.data);
-                $.toaster.success(res.msg);
-            }, () => {
-                busy(false);
-                $.toaster.error('检查失败');
-            });
+            checkUpdate(true);
         });
 
         $('#btn_apply').on('click', function () {
@@ -98,15 +106,12 @@ window.pageOnLoad = function () {
 
     function start() {
         if (typeof window.MarkdownPreviewer === 'function') {
-            preview = new window.MarkdownPreviewer('changelog', {
-                value: '点击「检查更新」获取最新信息。',
-            });
+            preview = new window.MarkdownPreviewer('changelog', { value: '' });
         } else {
             $.logger?.error('MarkdownPreviewer 未加载，回退纯文本');
-            setChangelog('点击「检查更新」获取最新信息。');
         }
         bindActions();
-        load();
+        checkUpdate(false);
     }
 
     let started = false;

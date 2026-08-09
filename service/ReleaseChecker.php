@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace nova\plugin\update\service;
 
+use function nova\framework\config;
+
 use nova\framework\core\File;
 use nova\plugin\http\HttpClient;
 use nova\plugin\http\HttpException;
-use RuntimeException;
 
-use function nova\framework\config;
+use RuntimeException;
 
 /**
  * 从 GitHub Releases 检查可用更新，结果缓存到 runtime/update/check.json。
@@ -226,7 +227,7 @@ class ReleaseChecker
     }
 
     /**
-     * @param list<mixed> $assets
+     * @param  list<mixed>               $assets
      * @return array<string, mixed>|null
      */
     private function findAsset(array $assets, string $assetName): ?array

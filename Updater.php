@@ -181,7 +181,7 @@ class Updater
 
     private function download(string $url, string $dest): void
     {
-        @unlink($dest);
+        File::del($dest);
         $fp = fopen($dest, 'wb');
         if ($fp === false) {
             throw new RuntimeException('无法创建临时文件');
@@ -207,7 +207,7 @@ class Updater
         } finally {
             fclose($fp);
             if (!$ok) {
-                @unlink($dest);
+                File::del($dest);
             }
         }
 

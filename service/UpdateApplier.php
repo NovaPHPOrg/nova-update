@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace nova\plugin\update\service;
 
+use function nova\framework\config;
+
 use nova\framework\core\File;
+
+use function nova\framework\isWorkerman;
+
 use nova\plugin\http\HttpClient;
 use nova\plugin\http\HttpException;
 use RuntimeException;
+
 use Throwable;
 use ZipArchive;
-
-use function nova\framework\config;
-use function nova\framework\isWorkerman;
 
 /**
  * 下载标准 zip 并覆盖安装目录；保留 config.php / runtime / uploads。

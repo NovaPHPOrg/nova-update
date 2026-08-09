@@ -1,18 +1,9 @@
-window.pageLoadFiles = ['MarkdownPreviewer'];
+window.pageLoadFiles = ['MarkdownPreviewer','Layer'];
 
 window.pageOnLoad = function () {
     let updatable = false;
     let latest = '';
-    let preview = null;
-
-    function setChangelog(md) {
-        const text = md || '';
-        if (preview) {
-            preview.setMarkdown(text);
-            return;
-        }
-        $('#changelog').text(text);
-    }
+    const preview = new MarkdownPreviewer('changelog', { value: '' });
 
     function render(data) {
         data = data || {};
@@ -39,7 +30,7 @@ window.pageOnLoad = function () {
             $('#update_tip').text('当前已是最新版本，无需更新。');
         }
 
-        setChangelog(data.changelog || (latest ? '无更新说明' : ''));
+        preview.setMarkdown(data.changelog || (latest ? '无更新说明' : ''));
         $('#btn_apply').prop('disabled', !updatable);
     }
 
@@ -48,14 +39,10 @@ window.pageOnLoad = function () {
         $('#btn_apply').prop('disabled', on || !updatable);
     }
 
-    function checking() {
-        $('#update_status').removeClass('tag-info tag-success').addClass('tag-neutral').text('检查中');
-        $('#update_tip').text('正在检查更新…');
-    }
-
     function checkUpdate(notify) {
         busy(true);
-        checking();
+        $('#update_status').removeClass('tag-info tag-success').addClass('tag-neutral').text('检查中');
+        $('#update_tip').text('正在检查更新…');
         $.request.postForm('/update/api/check', {}, (res) => {
             busy(false);
             if (res.code !== 200) {
@@ -74,63 +61,35 @@ window.pageOnLoad = function () {
         });
     }
 
-    function bindActions() {
-        $('#btn_check').on('click', function () {
-            checkUpdate(true);
+    $('#btn_check').on('click', () => checkUpdate(true));
+
+    $('#btn_apply').on('click', function () {
+        if (!updatable) return;
+        $.layer.confirm({
+            title: '确认更新',
+            msg: '升级到 ' + latest + '，将覆盖程序文件（配置与数据保留）。',
+            yes: function () {
+                busy(true);
+                $.request.postForm('/update/api/apply', {}, (res) => {
+                    busy(false);
+                    if (res.code !== 200) {
+                        $.toaster.error(res.msg || '更新失败');
+                        return;
+                    }
+                    $.toaster.success(res.msg);
+                    setTimeout(() => location.reload(), 800);
+                }, () => {
+                    busy(false);
+                    $.toaster.error('更新失败');
+                });
+            },
+            no: function () {},
         });
+    });
 
-        $('#btn_apply').on('click', function () {
-            if (!updatable) return;
-            $.layer.confirm({
-                title: '确认更新',
-                msg: '升级到 ' + latest + '，将覆盖程序文件（配置与数据保留）。',
-                yes: function () {
-                    busy(true);
-                    $.request.postForm('/update/api/apply', {}, (res) => {
-                        busy(false);
-                        if (res.code !== 200) {
-                            $.toaster.error(res.msg || '更新失败');
-                            return;
-                        }
-                        $.toaster.success(res.msg);
-                        setTimeout(() => location.reload(), 800);
-                    }, () => {
-                        busy(false);
-                        $.toaster.error('更新失败');
-                    });
-                },
-                no: function () {},
-            });
-        });
-    }
-
-    function start() {
-        if (typeof window.MarkdownPreviewer === 'function') {
-            preview = new window.MarkdownPreviewer('changelog', { value: '' });
-        } else {
-            $.logger?.error('MarkdownPreviewer 未加载，回退纯文本');
-        }
-        bindActions();
-        checkUpdate(false);
-    }
-
-    let started = false;
-    const run = () => {
-        if (started) return;
-        started = true;
-        start();
-    };
-
-    // bundle 以 "use strict" 开头时，class 声明不会挂到 window；等赋值后再初始化
-    if (typeof window.MarkdownPreviewer === 'function') {
-        run();
-    } else {
-        $.waitProp(window, 'MarkdownPreviewer', run);
-        setTimeout(run, 2000); // 超时回退纯文本，避免按钮永远不绑定
-    }
+    checkUpdate(false);
 
     window.pageOnUnLoad = function () {
-        preview?.destroy();
-        preview = null;
+        preview.destroy();
     };
 };

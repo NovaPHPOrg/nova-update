@@ -31,22 +31,37 @@ class Update extends BaseAPIController
                     'updatable' => false,
                     'changelog' => '',
                     'download_url' => '',
+                    'size' => 0,
                 ],
             ]);
         }
     }
 
+    /**
+     * 覆盖升级：SSE 推送进度。
+     * 事件：chunk -> {type,text,percent?}（type ∈ progress/error）；result -> {from,to}；done -> end
+     */
     public function apply(): Response
     {
-        try {
-            $result = (new Updater())->apply();
-            return Response::asJson([
-                'code' => 200,
-                'msg' => '已更新到 ' . $result['to'],
-                'data' => $result,
-            ]);
-        } catch (Throwable $e) {
-            return Response::asJson(['code' => 400, 'msg' => $e->getMessage()]);
-        }
+        return Response::asSSE(function (callable $emit): void {
+            $send = static function (string $type, string $text, ?int $percent = null) use ($emit): void {
+                $payload = ['type' => $type, 'text' => $text];
+                if ($percent !== null) {
+                    $payload['percent'] = $percent;
+                }
+                $emit(json_encode($payload, JSON_UNESCAPED_UNICODE), 'chunk');
+            };
+
+            try {
+                $result = (new Updater())->apply(static function (array $p) use ($send): void {
+                    $send('progress', (string)$p['text'], $p['percent'] ?? null);
+                });
+                $emit(json_encode($result, JSON_UNESCAPED_UNICODE), 'result');
+            } catch (Throwable $e) {
+                $send('error', $e->getMessage());
+            }
+
+            $emit('end', 'done');
+        });
     }
 }

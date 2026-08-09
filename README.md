@@ -17,4 +17,4 @@ GitHub API 请求缓存走 `HttpClient::cache()`（默认 24h），不再单独�
 ## API
 
 - `POST /update/api/check` — 查远端（命中 HttpClient 缓存则不打 GitHub）
-- `POST /update/api/apply` — 下载覆盖
+- `GET /update/api/apply` — SSE 下载覆盖（chunk/result/done）

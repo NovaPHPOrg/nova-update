@@ -22,6 +22,8 @@ class Updater
     private const PRESERVE = ['config.php', 'runtime', 'uploads'];
     /** GitHub releases/latest 请求缓存（秒），走 HttpClient 自带缓存 */
     private const HTTP_CACHE_TTL = 86400;
+    /** 下载进度：至少增长 1% 或 256KB 才推送一次 */
+    private const PROGRESS_MIN_BYTES = 262144;
 
     public function version(): string
     {
@@ -29,7 +31,7 @@ class Updater
     }
 
     /**
-     * @return array{current: string, latest: string, updatable: bool, changelog: string, download_url: string}
+     * @return array{current: string, latest: string, updatable: bool, changelog: string, download_url: string, size: int}
      */
     public function check(): array
     {
@@ -51,9 +53,11 @@ class Updater
 
         $assetName = str_replace(['{name}', '{version}'], [$name, $latest], $assetTpl);
         $url = '';
+        $size = 0;
         foreach ($release['assets'] ?? [] as $asset) {
             if (is_array($asset) && ($asset['name'] ?? '') === $assetName) {
                 $url = (string)($asset['browser_download_url'] ?? '');
+                $size = (int)($asset['size'] ?? 0);
                 break;
             }
         }
@@ -65,14 +69,23 @@ class Updater
             'latest' => $latest,
             'changelog' => (string)($release['body'] ?? ''),
             'download_url' => $url,
+            'size' => $size,
         ]);
     }
 
     /**
+     * @param  (callable(array{stage: string, text: string, percent: ?int}): void)|null $onProgress
      * @return array{from: string, to: string}
      */
-    public function apply(): array
+    public function apply(?callable $onProgress = null): array
     {
+        $progress = static function (string $stage, string $text, ?int $percent = null) use ($onProgress): void {
+            if ($onProgress === null) {
+                return;
+            }
+            $onProgress(['stage' => $stage, 'text' => $text, 'percent' => $percent]);
+        };
+
         if (!class_exists(ZipArchive::class)) {
             throw new RuntimeException('缺少 zip 扩展');
         }
@@ -80,6 +93,7 @@ class Updater
             throw new RuntimeException('应用目录或 runtime 不可写');
         }
 
+        $progress('checking', '正在检查更新…');
         $info = $this->check();
         if (!$info['updatable']) {
             throw new RuntimeException('已是最新版本 ' . $info['current']);
@@ -97,8 +111,10 @@ class Updater
         $extract = $work . DS . 'extract';
 
         try {
-            $this->download($info['download_url'], $zip);
+            $progress('downloading', '正在下载更新包…', 0);
+            $this->download($info['download_url'], $zip, (int)$info['size'], $onProgress);
 
+            $progress('extracting', '正在解压…');
             if (is_dir($extract)) {
                 File::del($extract);
             }
@@ -110,12 +126,15 @@ class Updater
             }
             $za->close();
 
+            $progress('installing', '正在安装…');
             $root = $this->packageRoot($extract);
             $this->overlay($root);
             $this->mergeConfig($root, $info['latest']);
 
             File::del($zip);
             File::del($extract);
+
+            $progress('done', '已更新到 ' . $info['latest'], 100);
 
             return ['from' => $info['current'], 'to' => $info['latest']];
         } finally {
@@ -124,8 +143,8 @@ class Updater
     }
 
     /**
-     * @param  array<string, mixed>                                                                             $data
-     * @return array{current: string, latest: string, updatable: bool, changelog: string, download_url: string}
+     * @param  array<string, mixed>                                                                                          $data
+     * @return array{current: string, latest: string, updatable: bool, changelog: string, download_url: string, size: int}
      */
     private function result(array $data): array
     {
@@ -138,6 +157,7 @@ class Updater
             'updatable' => $latest !== '' && version_compare($latest, $current, '>'),
             'changelog' => (string)($data['changelog'] ?? ''),
             'download_url' => (string)($data['download_url'] ?? ''),
+            'size' => (int)($data['size'] ?? 0),
         ];
     }
 
@@ -179,15 +199,23 @@ class Updater
         return $data;
     }
 
-    private function download(string $url, string $dest): void
+    /**
+     * @param (callable(array{stage: string, text: string, percent: ?int}): void)|null $onProgress
+     */
+    private function download(string $url, string $dest, int $expectedSize, ?callable $onProgress): void
     {
         File::del($dest);
+        File::mkDir(dirname($dest));
         $fp = fopen($dest, 'wb');
         if ($fp === false) {
             throw new RuntimeException('无法创建临时文件');
         }
 
+        $written = 0;
+        $lastPercent = -1;
+        $lastBytes = 0;
         $ok = false;
+
         try {
             HttpClient::init('')
                 ->timeout(600)
@@ -196,16 +224,53 @@ class Updater
                     'Accept' => 'application/octet-stream',
                 ])
                 ->get()
-                ->stream($url, [], static function (string $chunk) use ($fp): void {
-                    if (fwrite($fp, $chunk) === false) {
+                ->stream($url, [], static function (string $chunk) use (
+                    $fp,
+                    $expectedSize,
+                    $onProgress,
+                    &$written,
+                    &$lastPercent,
+                    &$lastBytes
+                ): void {
+                    $n = fwrite($fp, $chunk);
+                    if ($n === false) {
                         throw new RuntimeException('写入失败');
                     }
+                    $written += $n;
+
+                    if ($onProgress === null) {
+                        return;
+                    }
+
+                    $percent = null;
+                    if ($expectedSize > 0) {
+                        $percent = min(99, (int)floor($written * 100 / $expectedSize));
+                    }
+
+                    $bytesDelta = $written - $lastBytes;
+                    $percentDelta = $percent === null ? 0 : ($percent - $lastPercent);
+                    if ($bytesDelta < self::PROGRESS_MIN_BYTES && $percentDelta < 1 && $written !== $expectedSize) {
+                        return;
+                    }
+
+                    $lastBytes = $written;
+                    if ($percent !== null) {
+                        $lastPercent = $percent;
+                    }
+
+                    $text = $percent === null
+                        ? ('正在下载… ' . self::formatBytes($written))
+                        : ('正在下载… ' . $percent . '%');
+                    $onProgress(['stage' => 'downloading', 'text' => $text, 'percent' => $percent]);
                 });
-            $ok = filesize($dest) > 0;
+            fflush($fp);
+            $ok = $written > 0;
         } catch (HttpException $e) {
             throw new RuntimeException('下载失败：' . $e->getMessage(), 0, $e);
         } finally {
-            fclose($fp);
+            if (is_resource($fp)) {
+                fclose($fp);
+            }
             if (!$ok) {
                 File::del($dest);
             }
@@ -214,6 +279,22 @@ class Updater
         if (!$ok) {
             throw new RuntimeException('下载失败：文件为空');
         }
+
+        if ($onProgress !== null) {
+            $onProgress(['stage' => 'downloading', 'text' => '下载完成', 'percent' => 100]);
+        }
+    }
+
+    private static function formatBytes(int $bytes): string
+    {
+        if ($bytes < 1024) {
+            return $bytes . ' B';
+        }
+        if ($bytes < 1048576) {
+            return round($bytes / 1024, 1) . ' KB';
+        }
+
+        return round($bytes / 1048576, 1) . ' MB';
     }
 
     private function packageRoot(string $extract): string

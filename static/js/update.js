@@ -1,8 +1,9 @@
-window.pageLoadFiles = ['MarkdownPreviewer','Layer'];
+window.pageLoadFiles = ['MarkdownPreviewer', 'Layer'];
 
 window.pageOnLoad = function () {
     let updatable = false;
     let latest = '';
+    let applySource = null;
     const preview = new MarkdownPreviewer('changelog', { value: '' });
 
     function render(data) {
@@ -61,6 +62,57 @@ window.pageOnLoad = function () {
         });
     }
 
+    function stopApply(closeEs) {
+        if (closeEs && applySource) {
+            applySource.close();
+        }
+        applySource = null;
+        $('body').closeLoading();
+        busy(false);
+    }
+
+    function startApply() {
+        let ok = false;
+        busy(true);
+        $('body').showLoading('准备更新…');
+
+        applySource = $.request.sse('/update/api/apply', {
+            autoReconnect: false,
+            eventHandlers: {
+                chunk: function (data) {
+                    if (!data || typeof data !== 'object') return;
+                    if (data.type === 'error') {
+                        stopApply(true);
+                        $.toaster.error(data.text || '更新失败');
+                        return;
+                    }
+                    let text = data.text || '更新中…';
+                    if (typeof data.percent === 'number' && data.percent >= 0 && data.percent < 100
+                        && text.indexOf('%') === -1) {
+                        text += ' ' + data.percent + '%';
+                    }
+                    $('body').updateLoading(text);
+                },
+                result: function (data) {
+                    ok = true;
+                    const to = data && data.to ? data.to : latest;
+                    $.toaster.success('已更新到 ' + to);
+                },
+                done: function () {
+                    stopApply(true);
+                    if (ok) {
+                        setTimeout(() => location.reload(), 800);
+                    }
+                },
+            },
+            onError: function () {
+                if (!applySource) return;
+                stopApply(true);
+                $.toaster.error('更新连接中断');
+            },
+        });
+    }
+
     $('#btn_check').on('click', () => checkUpdate(true));
 
     $('#btn_apply').on('click', function () {
@@ -68,21 +120,7 @@ window.pageOnLoad = function () {
         $.layer.confirm({
             title: '确认更新',
             msg: '升级到 ' + latest + '，将覆盖程序文件（配置与数据保留）。',
-            yes: function () {
-                busy(true);
-                $.request.postForm('/update/api/apply', {}, (res) => {
-                    busy(false);
-                    if (res.code !== 200) {
-                        $.toaster.error(res.msg || '更新失败');
-                        return;
-                    }
-                    $.toaster.success(res.msg);
-                    setTimeout(() => location.reload(), 800);
-                }, () => {
-                    busy(false);
-                    $.toaster.error('更新失败');
-                });
-            },
+            yes: startApply,
             no: function () {},
         });
     });
@@ -90,6 +128,10 @@ window.pageOnLoad = function () {
     checkUpdate(false);
 
     window.pageOnUnLoad = function () {
+        if (applySource) {
+            applySource.close();
+            applySource = null;
+        }
         preview.destroy();
     };
 };

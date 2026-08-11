@@ -143,7 +143,7 @@ class Updater
     }
 
     /**
-     * @param  array<string, mixed>                                                                                          $data
+     * @param  array<string, mixed>                                                                                        $data
      * @return array{current: string, latest: string, updatable: bool, changelog: string, download_url: string, size: int}
      */
     private function result(array $data): array

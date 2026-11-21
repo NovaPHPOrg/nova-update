@@ -8,7 +8,7 @@
 2. `framework_start` 注册 `nova\plugin\update\UpdateManager`
 3. 后台「系统更新」进入即检查；确认后覆盖
 
-保留：`config.php`、`runtime/`、`uploads/`。只吃 `{name}-{version}.zip`，不管 Docker/Windows 包。
+保留：`config.php`、`config/`（节点拆分配置）、`runtime/`、`uploads/`。只吃 `{name}-{version}.zip`，不管 Docker/Windows 包。
 
 可选：`update.token` 提高 GitHub API 限额。
 

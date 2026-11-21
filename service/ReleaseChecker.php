@@ -102,7 +102,7 @@ class ReleaseChecker
 
     public function currentVersion(): string
     {
-        return $this->normalizeVersion((string)config('version', '0.0.0'));
+        return $this->normalizeVersion((string)(config('version') ?? '0.0.0'));
     }
 
     /**

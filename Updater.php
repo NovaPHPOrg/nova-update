@@ -15,11 +15,11 @@ use ZipArchive;
 
 /**
  * 检查 GitHub Release → 下载标准 zip → 覆盖安装目录。
- * 保留 config.php / runtime / uploads。
+ * 保留 config.php、config/（节点拆分配置）、runtime、uploads。
  */
 class Updater
 {
-    private const PRESERVE = ['config.php', 'runtime', 'uploads'];
+    private const PRESERVE = ['config.php', 'config', 'runtime', 'uploads'];
     /** GitHub releases/latest 请求缓存（秒），走 HttpClient 自带缓存 */
     private const HTTP_CACHE_TTL = 86400;
     /** 下载进度：至少增长 1% 或 256KB 才推送一次 */
@@ -365,17 +365,25 @@ class Updater
 
     /**
      * @param array<string|int, mixed> $example
+     * @param array<string, mixed>|null $batch
      */
-    private function fillMissing(array $example, string $prefix): void
+    private function fillMissing(array $example, string $prefix = '', ?array &$batch = null): void
     {
+        $root = $batch === null;
+        if ($root) {
+            $batch = [];
+        }
         foreach ($example as $key => $value) {
             $path = $prefix === '' ? (string)$key : $prefix . '.' . $key;
             $current = config($path);
             if ($current === null) {
-                config($path, $value);
+                $batch[$path] = $value;
             } elseif (is_array($value) && is_array($current)) {
-                $this->fillMissing($value, $path);
+                $this->fillMissing($value, $path, $batch);
             }
+        }
+        if ($root && $batch !== []) {
+            Context::instance()->config()->setMany($batch);
         }
     }
 }

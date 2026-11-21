@@ -6,6 +6,7 @@ namespace nova\plugin\update\service;
 
 use function nova\framework\config;
 
+use nova\framework\core\Context;
 use nova\framework\core\File;
 
 use function nova\framework\isWorkerman;
@@ -18,7 +19,7 @@ use Throwable;
 use ZipArchive;
 
 /**
- * 下载标准 zip 并覆盖安装目录；保留 config.php / runtime / uploads。
+ * 下载标准 zip 并覆盖安装目录；保留 config.php、config/、runtime、uploads。
  */
 class UpdateApplier
 {
@@ -28,7 +29,7 @@ class UpdateApplier
     private const LAST_FILE = 'last.json';
 
     /** @var list<string> 相对 ROOT_PATH 永不覆盖的顶层项 */
-    private const PRESERVE = ['config.php', 'runtime', 'uploads'];
+    private const PRESERVE = ['config.php', 'config', 'runtime', 'uploads'];
 
     public function __construct(
         private readonly ReleaseChecker $checker = new ReleaseChecker()
@@ -276,10 +277,15 @@ class UpdateApplier
     }
 
     /**
-     * @param array<string, mixed> $example
+     * @param array<string, mixed>      $example
+     * @param array<string, mixed>|null $batch
      */
-    private function mergeMissing(array $example, string $prefix): void
+    private function mergeMissing(array $example, string $prefix = '', ?array &$batch = null): void
     {
+        $root = $batch === null;
+        if ($root) {
+            $batch = [];
+        }
         foreach ($example as $key => $value) {
             if (!is_string($key) && !is_int($key)) {
                 continue;
@@ -288,13 +294,16 @@ class UpdateApplier
             $current = config($path);
 
             if ($current === null) {
-                config($path, $value);
+                $batch[$path] = $value;
                 continue;
             }
 
             if (is_array($value) && is_array($current)) {
-                $this->mergeMissing($value, $path);
+                $this->mergeMissing($value, $path, $batch);
             }
+        }
+        if ($root && $batch !== []) {
+            Context::instance()->config()->setMany($batch);
         }
     }
 

@@ -11,6 +11,7 @@ use nova\framework\core\File;
 use nova\plugin\http\HttpClient;
 use nova\plugin\http\HttpException;
 use RuntimeException;
+use Throwable;
 use ZipArchive;
 
 /**
@@ -24,6 +25,10 @@ class Updater
     private const HTTP_CACHE_TTL = 86400;
     /** 下载进度：至少增长 1% 或 256KB 才推送一次 */
     private const PROGRESS_MIN_BYTES = 262144;
+    /** 单个镜像下载超时（秒） */
+    private const MIRROR_ATTEMPT_TIMEOUT = 120;
+    /** 上次成功的 release 镜像前缀，存在 runtime/update/ */
+    private const PREFERRED_MIRROR_FILE = 'preferred_mirror';
 
     public function version(): string
     {
@@ -39,13 +44,12 @@ class Updater
         $repo = (string)$cfg->get('update.repo', '');
         $name = (string)$cfg->get('update.name', 'app');
         $assetTpl = (string)$cfg->get('update.asset', '{name}-{version}.zip');
-        $token = (string)$cfg->get('update.token', '');
 
         if ($repo === '' || !str_contains($repo, '/')) {
             throw new RuntimeException('请配置 update.repo（owner/repo）');
         }
 
-        $release = $this->github($repo, '/releases/latest', $token);
+        $release = $this->github($repo, '/releases/latest');
         $latest = ltrim(trim((string)($release['tag_name'] ?? '')), 'vV');
         if ($latest === '') {
             throw new RuntimeException('无法解析远端版本');
@@ -112,7 +116,7 @@ class Updater
 
         try {
             $progress('downloading', '正在下载更新包…', 0);
-            $this->download($info['download_url'], $zip, (int)$info['size'], $onProgress);
+            $this->downloadViaMirrors($info['download_url'], $zip, (int)$info['size'], $onProgress);
 
             $progress('extracting', '正在解压…');
             if (is_dir($extract)) {
@@ -162,47 +166,186 @@ class Updater
     }
 
     /**
+     * 经 api.ankio.net/gh 代理查 Release，无需用户配置 GitHub token。
+     * @see https://api.ankio.net/docs/gh
+     *
      * @return array<string, mixed>
      */
-    private function github(string $repo, string $path, string $token): array
+    private function github(string $repo, string $path): array
     {
-        $client = HttpClient::init('https://api.github.com')
+        $client = HttpClient::init('https://api.ankio.net')
             ->timeout(30)
             ->cache(self::HTTP_CACHE_TTL)
             ->setHeaders([
-                'Accept' => 'application/vnd.github+json',
+                'Accept' => 'application/json',
                 'User-Agent' => 'nova-update',
             ]);
-        if ($token !== '') {
-            $client->setHeader('Authorization', 'Bearer ' . $token);
-        }
 
         try {
-            $response = $client->get()->send('/repos/' . $repo . $path);
+            $response = $client->get()->send('/gh/repos/' . $repo . $path);
         } catch (HttpException $e) {
-            throw new RuntimeException('请求 GitHub 失败：' . $e->getMessage(), 0, $e);
+            throw new RuntimeException('请求更新接口失败：' . $e->getMessage(), 0, $e);
         }
 
         $code = $response?->getHttpCode() ?? 0;
-        if ($code === 403) {
-            throw new RuntimeException('GitHub API 限流，请配置 update.token');
-        }
         if ($code < 200 || $code >= 300) {
-            throw new RuntimeException('GitHub API HTTP ' . $code);
+            throw new RuntimeException('更新接口 HTTP ' . $code);
         }
 
         $data = json_decode((string)$response->getBody(), true);
         if (!is_array($data)) {
-            throw new RuntimeException('GitHub 响应无效');
+            throw new RuntimeException('更新接口响应无效');
         }
 
         return $data;
     }
 
     /**
+     * 经 /gh/mirrors 拉镜像队列：优先上次成功前缀 → 其余镜像 → 官方地址。
+     * 失败的镜像丢到队尾逻辑里「跳过继续下一个」；成功则记下前缀。
+     * @see https://api.ankio.net/docs/gh
+     *
      * @param (callable(array{stage: string, text: string, percent: ?int}): void)|null $onProgress
      */
-    private function download(string $url, string $dest, int $expectedSize, ?callable $onProgress): void
+    private function downloadViaMirrors(string $githubUrl, string $dest, int $expectedSize, ?callable $onProgress): void
+    {
+        $queue = $this->buildMirrorQueue($githubUrl);
+        $errors = [];
+        $total = count($queue);
+
+        foreach ($queue as $i => $url) {
+            $n = $i + 1;
+            if ($onProgress !== null) {
+                $host = (string)(parse_url($url, PHP_URL_HOST) ?: $url);
+                $onProgress([
+                    'stage' => 'downloading',
+                    'text' => "尝试镜像 {$n}/{$total}：{$host}",
+                    'percent' => 0,
+                ]);
+            }
+
+            try {
+                $this->downloadOne($url, $dest, $expectedSize, $onProgress);
+                $this->rememberPreferredMirror($url, $githubUrl);
+                if ($onProgress !== null) {
+                    $onProgress(['stage' => 'downloading', 'text' => '下载完成', 'percent' => 100]);
+                }
+                return;
+            } catch (Throwable $e) {
+                File::del($dest);
+                $errors[] = ($n) . '. ' . ((string)(parse_url($url, PHP_URL_HOST) ?: $url)) . '：' . $e->getMessage();
+            }
+        }
+
+        throw new RuntimeException('所有镜像下载失败：' . implode(' | ', $errors));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function buildMirrorQueue(string $githubUrl): array
+    {
+        $mirrors = $this->fetchMirrorUrls($githubUrl);
+        $preferred = $this->loadPreferredMirror();
+        $queue = [];
+
+        if ($preferred !== '') {
+            foreach ($mirrors as $url) {
+                if (str_starts_with($url, $preferred)) {
+                    $queue[] = $url;
+                }
+            }
+        }
+
+        foreach ($mirrors as $url) {
+            if (!in_array($url, $queue, true)) {
+                $queue[] = $url;
+            }
+        }
+
+        if (!in_array($githubUrl, $queue, true)) {
+            $queue[] = $githubUrl;
+        }
+
+        return $queue;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function fetchMirrorUrls(string $githubUrl): array
+    {
+        try {
+            $response = HttpClient::init('https://api.ankio.net')
+                ->timeout(15)
+                ->setHeaders([
+                    'Accept' => 'application/json',
+                    'User-Agent' => 'nova-update',
+                ])
+                ->get()
+                ->send('/gh/mirrors', ['url' => $githubUrl]);
+        } catch (HttpException) {
+            return [];
+        }
+
+        if (($response?->getHttpCode() ?? 0) < 200 || ($response?->getHttpCode() ?? 0) >= 300) {
+            return [];
+        }
+
+        $data = json_decode((string)$response->getBody(), true);
+        $list = $data['data']['mirrors'] ?? null;
+        if (!is_array($list)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($list as $url) {
+            if (is_string($url) && $url !== '') {
+                $out[] = $url;
+            }
+        }
+        return $out;
+    }
+
+    private function preferredMirrorPath(): string
+    {
+        return RUNTIME_PATH . DS . 'update' . DS . self::PREFERRED_MIRROR_FILE;
+    }
+
+    private function loadPreferredMirror(): string
+    {
+        $file = $this->preferredMirrorPath();
+        if (!is_file($file)) {
+            return '';
+        }
+        return trim((string)file_get_contents($file));
+    }
+
+    private function rememberPreferredMirror(string $workedUrl, string $githubUrl): void
+    {
+        if ($workedUrl === $githubUrl) {
+            return;
+        }
+
+        $prefix = '';
+        $githubHostPath = 'https://github.com';
+        if (str_starts_with($githubUrl, $githubHostPath) && str_ends_with($workedUrl, substr($githubUrl, strlen($githubHostPath)))) {
+            $prefix = substr($workedUrl, 0, strlen($workedUrl) - (strlen($githubUrl) - strlen($githubHostPath)));
+        }
+
+        if ($prefix === '') {
+            return;
+        }
+
+        $dir = dirname($this->preferredMirrorPath());
+        File::mkDir($dir);
+        File::write($this->preferredMirrorPath(), $prefix);
+    }
+
+    /**
+     * @param (callable(array{stage: string, text: string, percent: ?int}): void)|null $onProgress
+     */
+    private function downloadOne(string $url, string $dest, int $expectedSize, ?callable $onProgress): void
     {
         File::del($dest);
         File::mkDir(dirname($dest));
@@ -218,7 +361,7 @@ class Updater
 
         try {
             HttpClient::init('')
-                ->timeout(600)
+                ->timeout(self::MIRROR_ATTEMPT_TIMEOUT)
                 ->setHeaders([
                     'User-Agent' => 'nova-update',
                     'Accept' => 'application/octet-stream',
@@ -280,8 +423,15 @@ class Updater
             throw new RuntimeException('下载失败：文件为空');
         }
 
-        if ($onProgress !== null) {
-            $onProgress(['stage' => 'downloading', 'text' => '下载完成', 'percent' => 100]);
+        if ($expectedSize > 0 && $written !== $expectedSize) {
+            File::del($dest);
+            throw new RuntimeException('大小不符：期望 ' . $expectedSize . ' 实得 ' . $written);
+        }
+
+        $head = (string)file_get_contents($dest, false, null, 0, 2);
+        if ($head !== 'PK') {
+            File::del($dest);
+            throw new RuntimeException('不是有效 zip');
         }
     }
 
